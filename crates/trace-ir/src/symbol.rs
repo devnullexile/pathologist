@@ -42,6 +42,14 @@ pub struct Function {
     pub span: Span,
     pub file: FileId,
     pub is_defined: bool,
+    /// Declared `virtual` (C++ methods). Virtual dispatch expansion treats a
+    /// method as virtual if *any* entry with its qualified name carries this
+    /// flag, so out-of-class definitions without the token still participate.
+    pub is_virtual: bool,
+    /// Entry may coexist with same-name externals of a different signature
+    /// (C++ overloads). When neither side sets this, name merges behave
+    /// exactly as in C (prototype + definition collapse into one entry).
+    pub is_cpp: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +82,9 @@ pub struct SymbolTable {
     pub variables: Vec<Variable>,
     pub call_sites: Vec<CallSite>,
     pub fn_by_name: IndexMap<String, FnId>,
+    /// Every external entry per name, overloads included (C++). Unlike
+    /// `fn_by_name` this never collapses to a single id.
+    pub externals_by_name: FxHashMap<String, Vec<FnId>>,
     pub global_by_name: IndexMap<String, VarId>,
     /// Internal-linkage definitions per file: `(file, name) -> FnId`.
     /// In C, a file-`static` definition shadows any external definition of
@@ -130,21 +141,58 @@ impl SymbolTable {
     pub fn add_function(&mut self, func: Function) -> FnId {
         if func.linkage == Linkage::External {
             if let Some(existing_id) = self.fn_by_name.get(&func.name).copied() {
-                if let Some(existing) = self.functions.iter_mut().find(|f| f.id == existing_id) {
-                    if func.is_defined {
-                        existing.is_defined = true;
-                        existing.file = func.file;
-                        existing.span = func.span;
-                        if !func.params.is_empty() {
+                // Merge only compatible redeclarations (prototype + definition).
+                // Distinct arities mean C++ overloads — and only then: keep
+                // both entries so call-site resolution can pick between them.
+                let existing_fn = self.functions.iter().find(|f| f.id == existing_id);
+                let overload_split = func.is_cpp || existing_fn.map(|e| e.is_cpp).unwrap_or(false);
+                let mergeable = existing_fn
+                    .map(|existing| {
+                        if !overload_split {
+                            return true;
+                        }
+                        // C++: prototypes and definitions of the *same*
+                        // function merge; distinct same-arity overloads
+                        // must stay apart. Parameter types disambiguate.
+                        existing.params.is_empty()
+                            || func.params.is_empty()
+                            || (existing.params.len() == func.params.len()
+                                && existing
+                                    .params
+                                    .iter()
+                                    .zip(func.params.iter())
+                                    .all(|(a, b)| self.param_type(*a) == self.param_type(*b)))
+                    })
+                    .unwrap_or(false);
+                if mergeable {
+                    if let Some(existing) = self.functions.iter_mut().find(|f| f.id == existing_id)
+                    {
+                        if func.is_defined {
+                            existing.is_defined = true;
+                            existing.file = func.file;
+                            existing.span = func.span;
+                            if !func.params.is_empty() {
+                                existing.params = func.params.clone();
+                            }
+                        } else if existing.params.is_empty() && !func.params.is_empty() {
                             existing.params = func.params.clone();
                         }
-                    } else if existing.params.is_empty() && !func.params.is_empty() {
-                        existing.params = func.params.clone();
+                        if func.is_virtual {
+                            existing.is_virtual = true;
+                        }
+                    }
+                    let bucket = self.externals_by_name.entry(func.name.clone()).or_default();
+                    if !bucket.contains(&existing_id) {
+                        bucket.push(existing_id);
                     }
                     return existing_id;
                 }
             }
             self.fn_by_name.insert(func.name.clone(), func.id);
+            self.externals_by_name
+                .entry(func.name.clone())
+                .or_default()
+                .push(func.id);
         }
         if func.linkage == Linkage::Internal {
             // Index every internal-linkage entry, declarations included:
@@ -159,6 +207,14 @@ impl SymbolTable {
         let id = func.id;
         self.functions.push(func);
         id
+    }
+
+    /// Type of a parameter variable, for overload signature comparison.
+    fn param_type(&self, var: VarId) -> Option<TypeId> {
+        self.variables
+            .iter()
+            .find(|v| v.id == var)
+            .map(|v| v.type_id)
     }
 
     pub fn add_variable(&mut self, var: Variable) -> VarId {
@@ -266,7 +322,25 @@ impl SymbolTable {
                 out.push(id);
             }
         }
+        // C++ overloads: additional entries under the same name that the
+        // first-wins `fn_by_name` table hides.
+        if let Some(bucket) = self.externals_by_name.get(name) {
+            for &id in bucket {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
         out
+    }
+
+    /// Every external entry declared or defined under `name` (overloads
+    /// included), in declaration order.
+    pub fn functions_named(&self, name: &str) -> Vec<FnId> {
+        self.externals_by_name
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn function_by_id(&self, id: FnId) -> Option<&Function> {

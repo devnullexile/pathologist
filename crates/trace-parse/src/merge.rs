@@ -21,6 +21,8 @@ pub struct UnitIndex {
     pub fn_returns: std::collections::HashMap<FnId, Vec<ReturnFlow>>,
     pub diagnostics: Vec<trace_ir::Diagnostic>,
     pub anon_type_counter: u32,
+    /// Per-unit `(derived, base)` class edges (C++).
+    pub inheritance: Vec<(String, String)>,
 }
 
 type SiteKey = (trace_ir::FileId, u32, u32, String);
@@ -28,6 +30,9 @@ type SiteKey = (trace_ir::FileId, u32, u32, String);
 pub fn merge_unit_index(program: &mut Program, unit: UnitIndex) {
     program.diagnostics.extend(unit.diagnostics);
     program.anon_type_counter = program.anon_type_counter.max(unit.anon_type_counter);
+    for (derived, base) in unit.inheritance {
+        program.add_inheritance(&derived, &base);
+    }
 
     let type_map = merge_types(&mut program.types, &unit.types);
 
@@ -138,6 +143,9 @@ pub fn merge_unit_index(program: &mut Program, unit: UnitIndex) {
         let mut site = cs;
         site.id = new_id;
         site.caller = fn_map.get(&site.caller).copied().unwrap_or(site.caller);
+        // Pre-resolved targets (overload picks, member-call override sets)
+        // must follow the entity remap like every other reference.
+        site.callee_fn_id = site.callee_fn_id.and_then(|f| fn_map.get(&f).copied());
         site.callee_var = site.callee_var.and_then(|v| var_map.get(&v).copied());
         site.var_args = site
             .var_args

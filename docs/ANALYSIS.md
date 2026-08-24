@@ -195,6 +195,11 @@ When `retain_points_to` is false (default), points-to sets are discarded after s
 - **Initializer-less array declarations** (tentative definitions such as
   `static struct Ops g_tbl[4];`) register the variable like any other global;
   runtime stores into elements then resolve normally.
+- **Positional struct initializers** (`static struct Ops o = { Fn, ... };`):
+  each bare value is mapped to its declared field by position and lowered as
+  the same precise `GepField`+`Store` chain designated members use — function
+  addresses included. Position counting treats designated and bare members
+  uniformly (C's reset-after-designator subtlety is not modeled; rare).
 
 ## Member subobject addressing
 
@@ -259,6 +264,52 @@ Registered in `trace-analysis/src/summaries.rs` (`apply_call_summary`). Current 
 | `memcpy`, `memmove` | **No pointer flow** |
 | Others | No effect |
 
+## C++ support (first step)
+
+`.cpp/.cc/.cxx/C++` files are indexed as TUs and parsed with tree-sitter-cpp
+(`SourceLang` per TU; headers inherit the including TU's grammar). Lowering is
+C++-aware only where it must be — everything else reuses the C machinery.
+
+- **Namespaces**: `ns_stack` qualifies declarations (`ns::f`). Anonymous
+  namespaces get internal linkage. `using` directives are recorded but not
+  used for base-name qualification.
+- **Overloads**: same-name entries are kept apart when arity differs
+  (arity-gated merge in `add_function`; `externals_by_name` bucket). Calls
+  resolve over the candidate set filtered by argument count; an empty
+  arity-filtered set falls back to all candidates (varargs). Ties emit one
+  direct site per candidate.
+- **Classes**: layouts intern under the fully qualified tag
+  (`gfx::Shape`). Inheritance facts (`Program.inheritance`) drive member
+  resolution: a call walks upward to the nearest declaring base. **Non-virtual**
+  methods resolve exactly to that declaring function; **`virtual` methods and
+  destructors** additionally expand downward through the subclass closure
+  (one site per target — delete-through-base is the dominant dtor pattern).
+  When no ancestor declares the member, the call falls back to the receiver's
+  static-type subclass closure (receiver types can be imprecise).
+- **Methods**: out-of-class definitions (`Ret Cls::m()`) merge with their
+  in-class prototypes. An implicit `this` parameter (`Ptr(Struct{Cls})`,
+  param index 0) is prepended. `virtual` flags survive merges.
+- **Ctors / dtors**: emitted for `new Cls(...)`, destructor calls on
+  `delete p`, explicit qualified dtor calls, constructor-declarations with
+  an argument list, ctor-initializer lists (base + member targets).
+- **References** lower as pointers (aliasing stores land on caller memory).
+- **Templates**: lowered once per primary name; `<...>` arguments stripped.
+
+Known C++ imprecision (in addition to the general list below):
+
+- Implicit `this->member` accesses (bare identifiers inside methods) are
+  **not** modeled; only explicit member access chains are.
+- Default construction without parens (`Cls o;`) emits no ctor site.
+- Objects at namespace scope emit no ctor/dtor sites (no enclosing function).
+- Anonymous-namespace overload ties degrade to first-wins.
+- Overload resolution is arity-only (no type-based ranking, conversions).
+- Template specializations collapse into the primary entry; no
+  dependent-type modeling.
+- Virtual expansion assumes single inheritance for the upward walk
+  (multiple bases still resolve, nearest declarer wins).
+- Headers shared between `.c` and `.cpp` TUs parse under whichever
+  grammar reaches them first at merge time.
+
 ## Known imprecision
 
 - All paths merged; no null-check refinement.
@@ -281,7 +332,6 @@ Registered in `trace-analysis/src/summaries.rs` (`apply_call_summary`). Current 
   registrations that hand a dispatcher to an external broker do not connect
   client proxies to server-side handler objects.
 - **`memcpy` / `memmove`**: invisible to analysis.
-- **C++ TUs** (`.cpp`) not indexed — impls only in C++ may be missing.
 - Macro-generated identifiers may be skipped when classified as macro-like callees.
 - Function pointer resolution is name/linkage based; dynamic `dlsym` not modeled.
 

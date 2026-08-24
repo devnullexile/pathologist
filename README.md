@@ -40,7 +40,7 @@ trace analyze /path/to/project -o /tmp/project.db --jobs 8
 
 ### `trace analyze`
 
-Analyze every `.c` file under `TARGET` and write results to SQLite.
+Analyze every C/C++ file (`.c`, `.cpp`, `.cc`, `.cxx`) under `TARGET` and write results to SQLite.
 
 ```text
 trace analyze [OPTIONS] <TARGET>
@@ -48,7 +48,7 @@ trace analyze [OPTIONS] <TARGET>
 
 | Option | Description |
 |--------|-------------|
-| `<TARGET>` | Root directory to scan recursively for `*.c` files. |
+| `<TARGET>` | Root directory to scan recursively for `*.c` / `*.cpp` / `*.cc` / `*.cxx` files. |
 | `-o`, `--output <PATH>` | Output database path. Default: `trace.db`. |
 | `--include <PATH>` | Add a preprocessor `#include` search path. Repeatable. |
 | `-D <NAME>` | Define preprocessor macro `NAME=1`. Repeatable. |
@@ -80,7 +80,7 @@ trace analyze ./my_app -o /tmp/debug.db --debug-points-to --full-export
 
 **Notes**
 
-- Only **`.c` files** are indexed as translation units. Headers are pulled in via `#include` during preprocessing, not analyzed as standalone TUs.
+- **`.c` and `.cpp`-family files** are indexed as translation units. Headers are pulled in via `#include` during preprocessing, not analyzed as standalone TUs. C++ support is a pragmatic first step — see [docs/ANALYSIS.md](docs/ANALYSIS.md) for scope and imprecision.
 - Line numbers in the database refer to **original** files on disk (resolved through the preprocessor's `LineMap`); call sites inside macro expansions attribute to the expansion site.
 - Pass include paths that match your build; there is no `compile_commands.json` integration yet.
 - **`static` functions** (internal linkage) and **file-scope `static` variables** are resolved within the defining translation unit. **`static` locals** inside functions are tracked as `fn_static` storage.
@@ -136,12 +136,12 @@ For unresolved indirect calls, query SQL directly (see below).
 ## Analysis pipeline
 
 ```
-discover .c → preprocess → parse → lower IR → build PAG → solve → export SQLite
+discover .c/.cpp → preprocess → parse → lower IR → build PAG → solve → export SQLite
 ```
 
 | Stage | What happens |
 |-------|----------------|
-| **Index** | Discover `.c` files, preprocess TUs (custom preprocessor), parse with tree-sitter, lower to IR (functions, variables, flow constraints, call sites). |
+| **Index** | Discover `.c` / `.cpp` files, preprocess TUs (custom preprocessor), parse with tree-sitter (C or C++ grammar per TU), lower to IR (functions, variables, flow constraints, call sites). |
 | **Analyze** | Build pointer assignment graph (PAG), run Andersen-style solver, resolve direct calls by name (including file-local `static` functions), indirect calls via points-to to function locations. |
 | **Export** | Write SQLite (minimal by default). |
 
@@ -405,7 +405,7 @@ tests/fixtures/    Integration test C corpora
 
 ## Limitations
 
-- **`.c` only** — C++ translation units (e.g. `.cpp` adapters) are not indexed; vtables implemented only in C++ may be missing from results.
+- **C++ first step** — namespaces, overloads (arity), classes/virtual dispatch, ctors/dtors are modeled; implicit `this->member` accesses, type-based overload ranking, and templates beyond name-stripping are not (see docs/ANALYSIS.md).
 - **May-analysis** — indirect calls can list multiple targets; absence of an edge does not prove unreachability.
 - **No path sensitivity** — all branches and paths are merged.
 - **Preprocessor subset** — not gcc/clang compatible for all extensions; see [docs/PREPROCESSOR.md](docs/PREPROCESSOR.md).

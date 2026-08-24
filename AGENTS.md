@@ -16,10 +16,10 @@ This file is for AI agents and human contributors working on the trace codebase.
 ## Pipeline (do not reorder casually)
 
 ```
-discover .c/.h → IncludeGraph → preprocess (cache) → parse/lower per TU → merge → build PAG → solve → export SQLite
+discover .c/.cpp/.h → IncludeGraph → preprocess (cache) → parse/lower per TU (C or C++ grammar) → merge → build PAG → solve → export SQLite
 ```
 
-- Only **`.c`** files are indexed as TUs; headers enter via `#include` in preprocessed source.
+- **`.c`** and **`.cpp`/`.cc`/`.cxx`** files are indexed as TUs (grammar per extension); headers enter via `#include` in preprocessed source.
 - **`merge_unit_index`** combines per-TU `UnitIndex` into one `Program` (remap ids).
 - **`CallReturn`** / **`fn_returns`** expand at PAG build (after merge), not at per-TU lower time.
 

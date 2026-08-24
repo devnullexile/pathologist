@@ -2,7 +2,7 @@
 
 ## Overview
 
-trace analyzes a directory of C translation units (`.c` files), builds a merged whole-program IR, runs Andersen-style pointer analysis, and exports call graphs and argument-flow edges to SQLite.
+trace analyzes a directory of C/C++ translation units (`.c` / `.cpp` files), builds a merged whole-program IR, runs Andersen-style pointer analysis, and exports call graphs and argument-flow edges to SQLite.
 
 The pipeline is **strictly phased**: each stage has a narrow input/output contract and can be tested independently.
 
@@ -10,7 +10,7 @@ The pipeline is **strictly phased**: each stage has a narrow input/output contra
 
 ```mermaid
 flowchart LR
-  Discover[Discover .c / .h]
+  Discover[Discover .c / .cpp / headers]
   Graph[IncludeGraph]
   Preproc[trace-preproc]
   Parse[trace-parse per TU]
@@ -29,7 +29,7 @@ flowchart LR
 
 | Stage | Crate | Input | Output |
 |-------|-------|-------|--------|
-| Discover | `trace-parse` | Root directory | Lists of `.c` and `.h` paths |
+| Discover | `trace-parse` | Root directory | Lists of `.c`/`.cpp` and header paths |
 | Include graph | `trace-parse` | File lists | `IncludeGraph` (deps, include dirs, preprocess set) |
 | Preprocess | `trace-preproc` | Source file + options | Expanded source string + `LineMap` |
 | Parse + lower | `trace-parse` | Preprocessed TU | `UnitIndex` (symbols, types, flow, call sites) |
@@ -39,7 +39,7 @@ flowchart LR
 
 ## Translation units and headers
 
-- **Indexed TUs**: only `*.c` files under `<TARGET>`.
+- **Indexed TUs**: `*.c` and `*.cpp`-family files under `<TARGET>`. Each TU selects the tree-sitter C or C++ grammar by extension.
 - **Headers**: discovered for the include graph but **not** lowered as standalone TUs. Their declarations appear in preprocessed `.c` output.
 - **Orphan headers** (never `#include`d by any project `.c`) are skipped — they contribute no reachable code.
 - **Cross-TU linking**: external symbols merged by name in `merge_unit_index` (`fn_by_name`). **`static` / internal-linkage** functions and file-scope `static` variables remain **per-file** and are resolved with `resolve_function_in_scope(name, file)` at analysis time.
